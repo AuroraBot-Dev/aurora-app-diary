@@ -4,203 +4,83 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from src.platform.contracts import AppEvent, CommandSpec
+from src.platform.contracts import AppEvent
+from src.utils.log_utils import get_logger
 from src.utils.time_utils import now_text
 
 if TYPE_CHECKING:
     from src.platform.application_api import PlatformAPI
 
+logger = get_logger("DiaryApplication")
 
-class ExampleApplication:
-    def __init__(
-        self,
-        greeting: str = "hello from example",
-        emit_startup_event: bool = True,
-    ) -> None:
+
+class DiaryApplication:
+    def __init__(self) -> None:
         self._api: PlatformAPI | None = None
-        self._greeting = greeting
-        self._emit_startup_event = emit_startup_event
-        self._notes_file: Path | None = None
-        self._state_file: Path | None = None
-        self._notes: list[dict[str, Any]] = []
-        self._tick_count = 0
+        self._diary_dir: Path | None = None
 
     def _bind(self, api: "PlatformAPI") -> None:
         self._api = api
-        self._notes_file = api.data_dir / "notes.json"
-        self._state_file = api.data_dir / "state.json"
-        api.log("info", f"绑定示例应用: package={api.package}, data_dir={api.data_dir}")
-        api.register_command(
-            CommandSpec(
-                name=f"{api.package}.dynamic_ping",
-                description="动态注册的 ping 命令，演示 register_command 的用法。",
-                parameters_schema={
-                    "type": "object",
-                    "properties": {
-                        "topic": {
-                            "type": "string",
-                            "description": "ping 主题",
-                        }
-                    },
-                    "required": [],
-                },
-                returns_schema={
-                    "type": "object",
-                    "properties": {
-                        "ok": {"type": "boolean"},
-                        "message": {"type": "string"},
-                    },
-                },
-                handler=self.dynamic_ping,
-            )
-        )
+        self._diary_dir = api.data_dir / "diaries"
 
     def manifest_path(self) -> Path:
         return Path(__file__).with_name("manifest.yaml")
 
     async def on_start(self) -> None:
-        self._load_notes()
-        self._save_state(last_status="started")
-        api = self._require_api()
-        api.log("info", "Example application started")
-        if self._emit_startup_event:
-            api.post_intention(
-                AppEvent(
-                    source=api.package,
-                    type="example.started",
-                    summary=self._greeting,
-                    payload={
-                        "greeting": self._greeting,
-                        "data_dir": str(api.data_dir),
-                    },
-                )
-            )
+        self._ensure_dir()
+        logger.info("Diary application started")
 
     async def on_stop(self) -> None:
-        self._save_notes()
-        self._save_state(last_status="stopped")
-        self._require_api().log("info", "Example application stopped")
+        logger.info("Diary application stopped")
 
     async def on_tick(self) -> None:
-        self._tick_count += 1
-        if self._tick_count % 30 == 0:
-            self._save_state(last_status="running")
+        return None
 
-    def echo_message(
-        self,
-        text: str,
-        session_id: str = "",
-        use_post_intention: bool = False,
-    ) -> dict[str, object]:
-        api = self._require_api()
-        event = AppEvent(
-            source=api.package,
-            type="example.echoed",
-            session_id=session_id,
-            summary=text.strip(),
-            payload={
-                "text": text,
-                "session_id": session_id,
-                "used_post_intention": bool(use_post_intention),
-            },
-        )
-        if use_post_intention:
-            api.post_intention(event)
-        else:
-            api.emit_event(event)
-        api.log("info", f"echo_message called: {text}")
-        return {"ok": True, "echoed_text": text, "package": api.package}
+    # ── 命令: 写日记 ────────────────────────────────
 
-    def save_note(
+    def write_diary(
         self,
-        title: str,
+        date: str,
         content: str,
-        emit_event: bool = True,
     ) -> dict[str, object]:
-        api = self._require_api()
-        note = {
-            "title": title,
-            "content": content,
-            "created_at": now_text(),
-        }
-        self._notes.append(note)
-        self._save_notes()
-        self._save_state(last_status="note_saved")
-        api.log("info", f"save_note called: {title}")
-        if emit_event:
-            api.emit_event(
+        file_path = self._diary_path(date)
+        file_path.write_text(content, encoding="utf-8")
+        if self._api is not None:
+            self._api.emit_event(
                 AppEvent(
-                    source=api.package,
-                    type="example.note_saved",
-                    summary=title.strip(),
-                    payload=note,
+                    source=self._api.package,
+                    type="diary.written",
+                    summary=f"日记 {date}",
+                    payload={"date": date},
                 )
             )
-        return {"ok": True, "note_count": len(self._notes)}
+        return {"saved": True, "date": date}
 
-    def publish_demo_event(
-        self,
-        event_type: str = "example.custom",
-        summary: str = "manual demo event",
-        session_id: str = "",
-    ) -> dict[str, object]:
-        api = self._require_api()
-        api.emit_event(
-            AppEvent(
-                source=api.package,
-                type=event_type.strip() or "example.custom",
-                session_id=session_id,
-                summary=summary.strip() or "manual demo event",
-                payload={"session_id": session_id},
-            )
-        )
-        api.log("info", f"publish_demo_event called: {event_type}")
-        return {"ok": True, "emitted_type": event_type.strip() or "example.custom"}
+    # ── 命令: 读日记 ────────────────────────────────
 
-    def dynamic_ping(self, topic: str = "platform") -> dict[str, object]:
-        api = self._require_api()
-        message = f"pong from {api.package}: {topic}"
-        api.log("info", f"dynamic_ping called: {topic}")
-        return {"ok": True, "message": message}
+    def read_diary(self, date: str) -> dict[str, object]:
+        file_path = self._diary_path(date)
+        if not file_path.exists():
+            return {"found": False, "date": date, "content": ""}
+        content = file_path.read_text(encoding="utf-8")
+        return {"found": True, "date": date, "content": content}
 
-    def _load_notes(self) -> None:
-        loaded = self._read_json(self._notes_file, [])
-        self._notes = [dict(item) for item in loaded if isinstance(item, dict)]
+    # ── 命令: 列出所有日期 ──────────────────────────
 
-    def _save_notes(self) -> None:
-        self._write_json(self._notes_file, self._notes)
+    def list_dates(self) -> dict[str, object]:
+        dates: list[str] = []
+        if self._diary_dir is not None and self._diary_dir.exists():
+            for p in sorted(self._diary_dir.glob("*.json")):
+                dates.append(p.stem)
+        return {"dates": dates, "count": len(dates)}
 
-    def _save_state(self, last_status: str) -> None:
-        api = self._require_api()
-        self._write_json(
-            self._state_file,
-            {
-                "package": api.package,
-                "tick_count": self._tick_count,
-                "notes_count": len(self._notes),
-                "last_status": last_status,
-                "updated_at": now_text(),
-            },
-        )
+    # ── 内部 ────────────────────────────────────────
 
-    def _read_json(self, file_path: Path | None, default: Any) -> Any:
-        if file_path is None or not file_path.exists():
-            return default
-        try:
-            return json.loads(file_path.read_text(encoding="utf-8-sig"))
-        except Exception:
-            return default
+    def _diary_path(self, date: str) -> Path:
+        if self._diary_dir is None:
+            raise RuntimeError("DiaryApplication is not bound to PlatformAPI")
+        return self._diary_dir / f"{date}.json"
 
-    def _write_json(self, file_path: Path | None, data: Any) -> None:
-        if file_path is None:
-            return
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-
-    def _require_api(self) -> "PlatformAPI":
-        if self._api is None:
-            raise RuntimeError("ExampleApplication is not bound to PlatformAPI")
-        return self._api
+    def _ensure_dir(self) -> None:
+        if self._diary_dir is not None:
+            self._diary_dir.mkdir(parents=True, exist_ok=True)
