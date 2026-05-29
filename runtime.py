@@ -5,13 +5,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from src.platform.contracts import AppEvent
-from src.utils.log_utils import get_logger
 from src.utils.time_utils import now_text
 
 if TYPE_CHECKING:
     from src.platform.application_api import PlatformAPI
-
-logger = get_logger("DiaryApplication")
 
 
 class DiaryApplication:
@@ -28,10 +25,10 @@ class DiaryApplication:
 
     async def on_start(self) -> None:
         self._ensure_dir()
-        logger.info("Diary application started")
+        self._require_api().log("info", "Diary application started")
 
     async def on_stop(self) -> None:
-        logger.info("Diary application stopped")
+        self._require_api().log("info", "Diary application stopped")
 
     async def on_tick(self) -> None:
         return None
@@ -84,3 +81,8 @@ class DiaryApplication:
     def _ensure_dir(self) -> None:
         if self._diary_dir is not None:
             self._diary_dir.mkdir(parents=True, exist_ok=True)
+
+    def _require_api(self) -> "PlatformAPI":
+        if self._api is None:
+            raise RuntimeError("DiaryApplication is not bound to PlatformAPI")
+        return self._api
