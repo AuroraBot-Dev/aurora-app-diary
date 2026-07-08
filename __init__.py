@@ -1,3 +1,4 @@
-from .runtime import DiaryApplication
+"""Aurora App — Diary (MCP Server)
 
-__all__ = ["DiaryApplication"]
+迁移到 MCP Server 模式，mcp_server.py 作为 stdio 入口。
+"""
